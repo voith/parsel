@@ -3,10 +3,14 @@ XPath selectors based on lxml
 """
 
 import six
+import jmespath as jpath
+import json as complexjson
 from lxml import etree
 
 from .utils import flatten, iflatten, extract_regex
 from .csstranslator import HTMLTranslator, GenericTranslator
+
+from jmespath.exceptions import JMESPathError
 
 
 class SafeXMLParser(etree.XMLParser):
@@ -21,16 +25,48 @@ _ctgroup = {
     'xml': {'_parser': SafeXMLParser,
             '_csstranslator': GenericTranslator(),
             '_tostring_method': 'xml'},
+    'json': {'_parser': None,
+            '_csstranslator': None,
+            '_tostring_method': None}
 }
 
 
 def _st(st):
     if st is None:
         return 'html'
-    elif st in _ctgroup:
+    elif st in _ctgroup or st == 'json':
         return st
     else:
         raise ValueError('Invalid type: %s' % st)
+
+
+def check_text(text):
+    if text is not None:
+        if not isinstance(text, six.text_type):
+            raise TypeError("text argument should be of type %s" % six.text_type)
+        return True
+    return False
+
+
+def translate_to_json(func):
+
+    def deco(selector_cls, *args, **kwargs):
+        if not selector_cls.is_type_json():
+            try:
+                selector_cls.json_obj = complexjson.loads(selector_cls.extract())
+            except ValueError:
+                selector_cls.json_obj = None
+        return func(selector_cls, *args, **kwargs)
+    return deco
+
+
+def translate_to_xpath(func):
+
+    def deco(selector_cls, *args, **kwargs):
+        if selector_cls.is_type_json():
+            selector_cls
+        return func(selector_cls, *args, **kwargs)
+    return deco
 
 
 def create_root_node(text, parser_cls, base_url=None):
@@ -98,6 +134,9 @@ class SelectorList(list):
         else:
             return default
 
+    def jmespath(self, jmespath):
+        return self.__class__(flatten([x.jmespath(jmespath) for x in self]))
+
 
 class Selector(object):
     """
@@ -111,7 +150,8 @@ class Selector(object):
     """
 
     __slots__ = ['text', 'namespaces', 'type', '_expr', 'root',
-                 '__weakref__', '_parser', '_csstranslator', '_tostring_method']
+                 '__weakref__', '_parser', '_csstranslator',
+                 '_tostring_method', 'json_obj']
 
     _default_type = None
     _default_namespaces = {
@@ -129,23 +169,33 @@ class Selector(object):
     selectorlist_cls = SelectorList
 
     def __init__(self, text=None, type=None, namespaces=None, root=None,
-                 base_url=None, _expr=None):
+                 base_url=None, _expr=None, json_obj=None):
+
+        if type == 'json':
+            if check_text(text):
+                try:
+                    json_obj = complexjson.loads(text)
+                except ValueError:
+                    raise ValueError("Could not decode Json from the given text")
+                    # json_obj = {}
+            elif json_obj is None:
+                raise ValueError("When type is json Selector needs either text or json_obj argument")
+        else:
+            if check_text(text):
+                root = self._get_root(text, base_url)
+            elif root is None:
+                raise ValueError("Selector needs either text or root argument")
+
         self.type = st = _st(type or self._default_type)
         self._parser = _ctgroup[st]['_parser']
         self._csstranslator = _ctgroup[st]['_csstranslator']
         self._tostring_method = _ctgroup[st]['_tostring_method']
-
-        if text is not None:
-            if not isinstance(text, six.text_type):
-                raise TypeError("text argument should be of type %s" % six.text_type)
-            root = self._get_root(text, base_url)
-        elif root is None:
-            raise ValueError("Selector needs either text or root argument")
-
         self.namespaces = dict(self._default_namespaces)
+
         if namespaces is not None:
             self.namespaces.update(namespaces)
         self.root = root
+        self.json_obj = json_obj
         self._expr = _expr
 
     def _get_root(self, text, base_url=None):
@@ -165,6 +215,7 @@ class Selector(object):
             return self.selectorlist_cls([])
 
         try:
+            # import pdb; pdb.set_trace()
             result = xpathev(query, namespaces=self.namespaces,
                              smart_strings=self._lxml_smart_strings)
         except etree.XPathError:
@@ -209,18 +260,21 @@ class Selector(object):
         Serialize and return the matched nodes as a list of unicode strings.
         Percent encoded content is unquoted.
         """
-        try:
-            return etree.tostring(self.root,
-                                  method=self._tostring_method,
-                                  encoding='unicode',
-                                  with_tail=False)
-        except (AttributeError, TypeError):
-            if self.root is True:
-                return u'1'
-            elif self.root is False:
-                return u'0'
-            else:
-                return six.text_type(self.root)
+        if self.is_type_json():
+            return self.json_obj
+        else:
+            try:
+                return etree.tostring(self.root,
+                                      method=self._tostring_method,
+                                      encoding='unicode',
+                                      with_tail=False)
+            except (AttributeError, TypeError):
+                if self.root is True:
+                    return u'1'
+                elif self.root is False:
+                    return u'0'
+                else:
+                    return six.text_type(self.root)
 
     def register_namespace(self, prefix, uri):
         """
@@ -243,16 +297,37 @@ class Selector(object):
                 if an.startswith('{'):
                     el.attrib[an.split('}', 1)[1]] = el.attrib.pop(an)
 
-    def __bool__(self):
-        """
-        Return ``True`` if there is any real content selected or ``False``
-        otherwise.  In other words, the boolean value of a :class:`Selector` is
-        given by the contents it selects.
-        """
-        return bool(self.extract())
-    __nonzero__ = __bool__
+    # @translate_to_json
+    def jmespath(self, query):
+        try:
+            result = jpath.search(query, self.json_obj)
+        except JMESPathError:
+            msg = u"Invalid JMESPath: %s" % query
+            raise ValueError(msg if six.PY3 else msg.encode("unicode_escape"))
+        if result is None:
+            return self.selectorlist_cls([])
+        return self.__class__(type=self.type,
+                              json_obj=result,
+                              _expr=query)
 
+    def is_type_json(self):
+        return self.type == 'json'
+
+    # def __bool__(self):
+    #     """
+    #     Return ``True`` if there is any real content selected or ``False``
+    #     otherwise.  In other words, the boolean value of a :class:`Selector` is
+    #     given by the contents it selects.
+    #     """
+    #     return bool(self.extract())
+    # __nonzero__ = __bool__
+    #
     def __str__(self):
-        data = repr(self.extract()[:40])
-        return "<%s xpath=%r data=%s>" % (type(self).__name__, self._expr, data)
+        if self.type == 'json':
+            path_type = 'jmespath'
+            data = repr(self.extract())[:40]
+        else:
+            path_type = 'xpath'
+            data = repr(self.extract()[:40])
+        return "<%s %s=%r data=%s>" % (type(self).__name__, path_type, self._expr, data)
     __repr__ = __str__
