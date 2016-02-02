@@ -31,6 +31,8 @@ def flatten(x, flatten_type=_is_listlike):
     """flatten(sequence) -> list
     Returns a single, flat list which contains all elements retrieved
     from the sequence and all recursively contained sub-sequences
+    ``flatten_type`` is a method that return true for the
+    type of objects that have to be flattened
     (iterables).
     Examples:
     >>> [1, 2, [3,4], (5,6)]
@@ -41,13 +43,18 @@ def flatten(x, flatten_type=_is_listlike):
     ['foo', 'bar']
     >>> flatten(["foo", ["baz", 42], "bar"])
     ['foo', 'baz', 42, 'bar']
+    >>> flatten([1, [2], [{"foo": "bar"}]], lambda y: isinstance(y, list))
+    [1, 2, {'foo': 'bar'}]
     """
     return list(iflatten(x, flatten_type))
 
 
 def iflatten(x, flatten_type=_is_listlike):
     """iflatten(sequence) -> iterator
-    Similar to ``.flatten()``, but returns iterator instead"""
+    Similar to ``.flatten()``, but returns iterator instead
+    ``flatten_type`` is a method that return true for the
+    type of objects that have to be flattened
+    """
     for el in x:
         if flatten_type(el):
             for el_ in flatten(el, flatten_type):

@@ -7,12 +7,10 @@ import jmespath as jpath
 import json
 import warnings
 from lxml import etree
-import pdb
+from jmespath.exceptions import JMESPathError
 
 from .utils import flatten, iflatten, extract_regex
 from .csstranslator import HTMLTranslator, GenericTranslator
-
-from jmespath.exceptions import JMESPathError
 
 
 class SafeXMLParser(etree.XMLParser):
@@ -36,7 +34,7 @@ _ctgroup = {
 def _st(st):
     if st is None:
         return 'html'
-    elif st in _ctgroup or st == 'json':
+    elif st in _ctgroup:
         return st
     else:
         raise ValueError('Invalid type: %s' % st)
@@ -50,38 +48,37 @@ def check_text(text):
     return False
 
 
-def translate_to_jmespath(func):
+def translate_path(to_json):
+    """
+    this is a decorator that modifies the selector
+    instance as needed by the methods jmespath and xpath
+    when ``to_json`` is true converts selector
+    instance to jmespath compatible type if required
+    """
 
-    def deco(selector_cls, *args, **kwargs):
-        if not selector_cls._is_type_json():
-            try:
+    def deco(func):
+        def wrapped(selector_cls, *args, **kwargs):
+            type = 'json' if to_json else None
+            is_json = selector_cls._is_type_json()
+            if (to_json and not is_json) or (not to_json and is_json):
                 selector_cls = selector_cls.__class__(
                         text=selector_cls.extract(),
-                        type='json')
-            except ValueError:
-                return selector_cls.selectorlist_cls([])
-        else:
-            selector_cls = selector_cls.__class__(
-                        text=selector_cls.extract())
-        return func(selector_cls, *args, **kwargs)
-    return deco
-
-
-def translate_to_xpath(func):
-
-    def deco(selector_cls, *args, **kwargs):
-        if selector_cls._is_type_json():
-            selector_cls = selector_cls.__class__(
-                        text=selector_cls.extract())
-        return func(selector_cls, *args, **kwargs)
+                        type=type)
+            return func(selector_cls, *args, **kwargs)
+        return wrapped
     return deco
 
 
 def json_incompatible(func):
-
+    """
+    this a decorator that gives a warning when a certain
+    method is called which not compatible with the Selector
+    of type `json`
+    """
     def deco(selector_cls, *args, **kwargs):
         if selector_cls._is_type_json():
-            warnings.warn('Cannot call this method when Selector is instantiated with type: \'json\'')
+            warnings.warn('Cannot call this method when '
+                          'Selector is instantiated with type: \'json\'')
             return None
         return func(selector_cls, *args, **kwargs)
     return deco
@@ -153,6 +150,12 @@ class SelectorList(list):
             return default
 
     def jmespath(self, jmespath):
+        """
+        Call the ``.jmespath()`` method for each element in this list and return
+        their results flattened as another :class:`SelectorList`.
+
+        ``query`` is the same argument as the one in :meth:`Selector.xpath`
+        """
         return self.__class__(flatten([x.jmespath(jmespath) for x in self]))
 
 
@@ -163,13 +166,15 @@ class Selector(object):
 
     ``text`` is a ``unicode`` object in Python 2 or a ``str`` object in Python 3
 
-    ``type`` defines the selector type, it can be ``"html"``, ``"xml"`` or ``None`` (default).
+    ``type`` defines the selector type, it can be ``"html"``, ``"xml"``, ``"json"`` or ``None`` (default).
     If ``type`` is ``None``, the selector defaults to ``"html"``.
+    if ``type`` is ``json`` than Selector tries to decode text.
+    If json decoding fails than Selector silently defaults back to ``"html"``
     """
 
     __slots__ = ['text', 'namespaces', 'type', '_expr', 'root',
                  '__weakref__', '_parser', '_csstranslator',
-                 '_tostring_method', 'json_obj']
+                 '_tostring_method', 'json_obj', '_jsexpr']
 
     _default_type = None
     _default_namespaces = {
@@ -187,25 +192,28 @@ class Selector(object):
     selectorlist_cls = SelectorList
 
     def __init__(self, text=None, type=None, namespaces=None, root=None,
-                 base_url=None, _expr=None, json_obj=None):
+                 base_url=None, _expr=None, json_obj=None, _jsexpr=None):
 
         self.type = st = _st(type or self._default_type)
         self._parser = _ctgroup[st]['_parser']
         self._csstranslator = _ctgroup[st]['_csstranslator']
         self._tostring_method = _ctgroup[st]['_tostring_method']
         self._expr = _expr
+        self._jsexpr = _jsexpr
 
         self.namespaces = dict(self._default_namespaces)
         if namespaces is not None:
             self.namespaces.update(namespaces)
+
+        reinitialise = False
         if type == 'json':
             if check_text(text):
                 try:
                     json_obj = json.loads(text)
                 except ValueError:
-                    raise ValueError("Could not decode Json from the given text")
+                    reinitialise = True
             elif json_obj is None:
-                raise ValueError("When type is json Selector needs either text or json_obj argument")
+                raise ValueError("Selector needs either text or json_obj argument when type is `json`")
         else:
             if check_text(text):
                 root = self._get_root(text, base_url)
@@ -215,10 +223,13 @@ class Selector(object):
         self.root = root
         self.json_obj = json_obj
 
+        if reinitialise:
+            self.__init__(text=text)
+
     def _get_root(self, text, base_url=None):
         return create_root_node(text, self._parser, base_url=base_url)
 
-    @translate_to_xpath
+    @translate_path(to_json=False)
     def xpath(self, query):
         """
         Find nodes matching the xpath ``query`` and return the result as a
@@ -248,7 +259,7 @@ class Selector(object):
                   for x in result]
         return self.selectorlist_cls(result)
 
-    @translate_to_xpath
+    @translate_path(to_json=False)
     def css(self, query):
         """
         Apply the given CSS selector and return a :class:`SelectorList` instance.
@@ -279,10 +290,10 @@ class Selector(object):
         Percent encoded content is unquoted.
         """
         if self._is_type_json():
-            if isinstance(self.json_obj, (list, dict, bool)):
-                return json.dumps(self.json_obj)
-            else:
+            if isinstance(self.json_obj, six.string_types):
                 return six.text_type(self.json_obj)
+            else:
+                return json.dumps(self.json_obj)
 
         try:
             return etree.tostring(self.root,
@@ -297,6 +308,7 @@ class Selector(object):
             else:
                 return six.text_type(self.root)
 
+    @json_incompatible
     def register_namespace(self, prefix, uri):
         """
         Register the given namespace to be used in this :class:`Selector`.
@@ -319,7 +331,7 @@ class Selector(object):
                 if an.startswith('{'):
                     el.attrib[an.split('}', 1)[1]] = el.attrib.pop(an)
 
-    @translate_to_jmespath
+    @translate_path(to_json=True)
     def jmespath(self, query):
         """
         Find nodes matching the jmespath ``query`` and return the result as a
@@ -339,8 +351,8 @@ class Selector(object):
 
         result = [self.__class__(type=self.type,
                                  json_obj=x,
-                                 _expr=query)
-                  for x in flatten(result, lambda y: isinstance(y, list)) if x]
+                                 _jsexpr=query)
+                  for x in flatten(result, lambda y: isinstance(y, list)) if x is not None]
         return self.selectorlist_cls(result)
 
     def _is_type_json(self):
@@ -356,10 +368,7 @@ class Selector(object):
     __nonzero__ = __bool__
 
     def __str__(self):
-        if self._is_type_json():
-            path_type = 'jmespath'
-        else:
-            path_type = 'xpath'
         data = repr(self.extract()[:40])
-        return "<%s %s=%r data=%s>" % (type(self).__name__, path_type, self._expr, data)
+        return "<%s xpath=%r jmespath=%r data=%s>" % (type(self).__name__, self._expr, self._jsexpr, data)
+
     __repr__ = __str__

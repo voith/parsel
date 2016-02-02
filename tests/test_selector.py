@@ -3,6 +3,7 @@ import re
 import weakref
 import six
 import unittest
+import json
 from parsel import Selector
 
 
@@ -33,25 +34,92 @@ class SelectorTestCase(unittest.TestCase):
         self.assertEqual([x.extract() for x in sel.xpath("concat(//input[@name='a']/@value, //input[@name='b']/@value)")],
                          [u'12'])
 
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "img_url": [
+                            "http://example.com/img1.png",
+                            "http://example.com/img1.jpeg"
+                        ],
+                        "id": 1
+                    }
+                },
+                {
+                    "product": {
+                        "img_url": [
+                            "http://example.com/img2.png",
+                            "http://example.com/img2.jpeg"
+                        ],
+                        "id": 2
+                    }
+                }
+            ]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        jl = jmsel.jmespath('products[].product.id')
+        self.assertEqual(2, len(jl))
+        for x in jl:
+            assert isinstance(x, self.sscls)
+        self.assertEqual(jl.extract(),
+                         [x.extract() for x in jl])
+        self.assertEqual([x.extract() for x in jl],
+                         [u'1', u'2'])
+
+        self.assertEqual(len([x.extract() for x in jmsel.jmespath('*[*].*.img_url')]),
+                         4)
+        self.assertEqual([x.extract() for x in jmsel.jmespath('*[*].*.img_url')],
+                         [u'http://example.com/img1.png',
+                          u'http://example.com/img1.jpeg',
+                          u'http://example.com/img2.png',
+                          u'http://example.com/img2.jpeg'])
+
+        self.assertEqual([x.extract() for x in jmsel.jmespath('products[0].product.img_url.join(`, `, @)')],
+                         [u'http://example.com/img1.png, http://example.com/img1.jpeg'])
+
     def test_representation_slice(self):
         body = u"<p><input name='{}' value='\xa9'/></p>".format(50 * 'b')
         sel = self.sscls(text=body)
 
-        representation = "<Selector xpath='//input/@name' data='{}'>".format(40 * 'b')
+        representation = "<Selector xpath='//input/@name' jmespath=None data='{}'>".format(40 * 'b')
         if six.PY2:
-            representation = "<Selector xpath='//input/@name' data=u'{}'>".format(40 * 'b')
+            representation = "<Selector xpath='//input/@name' jmespath=None data=u'{}'>".format(40 * 'b')
 
         self.assertEqual(
             [repr(it) for it in sel.xpath('//input/@name')],
             [representation]
         )
 
+        jsbody = u"""
+        {{
+            "products": [
+                {{
+                    "product": {{
+                        "name": "{}",
+                        "id": 1
+                    }}
+                }}]
+        }}
+        """.format(50*'b')
+        jmsel = self.sscls(text=jsbody, type='json')
+
+        representation = "<Selector xpath=None jmespath='*[0].*.name' data='{}'>".format(40 * 'b')
+        if six.PY2:
+            representation = "<Selector xpath=None jmespath='*[0].*.name' data=u'{}'>".format(40 * 'b')
+
+        self.assertEqual(
+            [repr(it) for it in jmsel.jmespath('*[0].*.name')],
+            [representation]
+        )
+
     def test_representation_unicode_query(self):
         body = u"<p><input name='{}' value='\xa9'/></p>".format(50 * 'b')
 
-        representation = '<Selector xpath=\'//input[@value="©"]/@value\' data=\'©\'>'
+        representation = '<Selector xpath=\'//input[@value="©"]/@value\' jmespath=None data=\'©\'>'
         if six.PY2:
-            representation = "<Selector xpath=u'//input[@value=\"\\xa9\"]/@value' data=u'\\xa9'>"
+            representation = "<Selector xpath=u'//input[@value=\"\\xa9\"]/@value' jmespath=None data=u'\\xa9'>"
 
         sel = self.sscls(text=body)
         self.assertEqual(
@@ -59,9 +127,34 @@ class SelectorTestCase(unittest.TestCase):
             [representation]
         )
 
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "name": "\xa9",
+                        "id": 1
+                    }
+                }]
+        }
+        """
+
+        representation = '<Selector xpath=None jmespath=\"products[?product.name==\'©\'].product.name\" data=\'©\'>'
+        if six.PY2:
+            representation = '<Selector xpath=None jmespath=u"products[?product.name==\'\\xa9\'].product.name" data=u\'\\xa9\'>'
+
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertEqual(
+            [repr(it) for it in jmsel.jmespath(u'products[?product.name==\'\xa9\'].product.name')],
+            [representation]
+        )
+
     def test_check_text_argument_type(self):
         self.assertRaisesRegexp(TypeError, 'text argument should be of type',
                                 self.sscls, b'<html/>')
+
+        self.assertRaisesRegexp(TypeError, 'text argument should be of type',
+                                self.sscls, b'{}', 'json')
 
     def test_extract_first(self):
         """Test if extract_first() returns first element"""
@@ -79,12 +172,63 @@ class SelectorTestCase(unittest.TestCase):
 
         self.assertEqual(sel.xpath('/ul/li[@id="doesnt-exist"]/text()').extract_first(), None)
 
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "img_url": [
+                            "http://example.com/img1.png",
+                            "http://example.com/img1.jpeg"
+                        ],
+                        "id": 1
+                    }
+                },
+                {
+                    "product": {
+                        "img_url": [
+                            "http://example.com/img2.png",
+                            "http://example.com/img2.jpeg"
+                        ],
+                        "id": 2
+                    }
+                }
+            ]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertEqual(jmsel.jmespath('products[].product.img_url').extract_first(),
+                         jmsel.jmespath('products[].product.img_url').extract()[0])
+
+        self.assertEqual(jmsel.jmespath("products[?product.id == `1`].product.img_url").extract_first(),
+                         jmsel.jmespath("products[?product.id == `1`].product.img_url").extract()[0])
+
+        self.assertEqual(jmsel.jmespath('products[1].product.img_url').extract_first(),
+                         jmsel.jmespath('products[*].product.img_url').extract()[2])
+
+        self.assertEqual(jmsel.jmespath("products[?product.id == 'does-not exist'].product.img_url").extract_first(),
+                         None)
+
     def test_extract_first_default(self):
         """Test if extract_first() returns default value when no results found"""
         body = u'<ul><li id="1">1</li><li id="2">2</li></ul>'
         sel = self.sscls(text=body)
 
         self.assertEqual(sel.xpath('//div/text()').extract_first(default='missing'), 'missing')
+
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "name": "\xa9",
+                        "id": 1
+                    }
+                }]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertEqual(jmsel.jmespath('doesnot_exist.doesnot_exist').extract_first(default='missing'), 'missing')
 
     def test_re_first(self):
         """Test if re_first() returns first matched element"""
@@ -103,10 +247,54 @@ class SelectorTestCase(unittest.TestCase):
         self.assertEqual(sel.xpath('/ul/li/text()').re_first('\w+'), None)
         self.assertEqual(sel.xpath('/ul/li[@id="doesnt-exist"]/text()').re_first('\d'), None)
 
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "name": "ABC",
+                        "id": 1
+                    }
+                },
+                {
+                    "product": {
+                        "name": "XYZ",
+                        "id": 2
+                    }
+                }
+            ]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+
+        self.assertEqual(jmsel.jmespath('*[].*.id').re_first('\d'),
+                         jmsel.jmespath('*[].*.id').re('\d')[0])
+
+        self.assertEqual(jmsel.jmespath('*[1].*.id').re_first('\d'),
+                         jmsel.jmespath('*[].*.id').re('\d')[1])
+
+        self.assertEqual(jmsel.jmespath('*[? product.id == `2`].*.name').re_first('\w+'),
+                         jmsel.jmespath('*[].*.name').re('\w+')[1])
+        self.assertEqual(jmsel.jmespath('*[].*.doesnot_exist').re_first('\d'), None)
+
     def test_select_unicode_query(self):
         body = u"<p><input name='\xa9' value='1'/></p>"
         sel = self.sscls(text=body)
         self.assertEqual(sel.xpath(u'//input[@name="\xa9"]/@value').extract(), [u'1'])
+
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "name": "\xa9",
+                        "id": "1"
+                    }
+                }]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertEqual(jmsel.jmespath(u"products[?product.name == '\xa9'].product.id").extract(), [u'1'])
 
     def test_list_elements_type(self):
         """Test Selector returning the same type in selection methods"""
@@ -114,11 +302,18 @@ class SelectorTestCase(unittest.TestCase):
         assert isinstance(self.sscls(text=text).xpath("//p")[0], self.sscls)
         assert isinstance(self.sscls(text=text).css("p")[0], self.sscls)
 
+        jsbody = u'{"A": ["a"]}'
+        assert isinstance(self.sscls(text=jsbody, type='json').jmespath("*")[0], self.sscls)
+
     def test_boolean_result(self):
         body = u"<p><input name='a'value='1'/><input name='b'value='2'/></p>"
         xs = self.sscls(text=body)
         self.assertEquals(xs.xpath("//input[@name='a']/@name='a'").extract(), [u'1'])
         self.assertEquals(xs.xpath("//input[@name='a']/@name='n'").extract(), [u'0'])
+
+        jsbody = u'[]'
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertEquals(jmsel.jmespath('contains(`foobar`, `foo`)').extract(), ['true'])
 
     def test_differences_parsing_xml_vs_html(self):
         """Test that XML and HTML Selector's behave differently"""
@@ -140,6 +335,11 @@ class SelectorTestCase(unittest.TestCase):
                                 'Selector needs either text or root argument',
                                 self.sscls)
 
+    def test_text_or_json_obj_is_required_when_type_is_json(self):
+        self.assertRaisesRegexp(ValueError,
+                                'Selector needs either text or json_obj argument when type is `json`',
+                                self.sscls, **{'type': 'json'})
+
     def test_bool(self):
         text = u'<a href="" >false</a><a href="nonempty">true</a>'
         hs = self.sscls(text=text, type='html')
@@ -147,6 +347,32 @@ class SelectorTestCase(unittest.TestCase):
         self.assertEqual(falsish.extract(), u'')
         self.assertFalse(falsish)
         trueish = hs.xpath('//a/@href')[1]
+        self.assertEqual(trueish.extract(), u'nonempty')
+        self.assertTrue(trueish)
+
+        jsbody = u"""
+        {
+            "products": [
+                {
+                    "product": {
+                        "name": "",
+                        "id": 1
+                    }
+                },
+                {
+                    "product": {
+                        "name": "nonempty",
+                        "id": 2
+                    }
+                }
+            ]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        falsish = jmsel.jmespath('products[*].product.name')[0]
+        self.assertEqual(falsish.extract(), u'')
+        self.assertFalse(falsish)
+        trueish = jmsel.jmespath('products[*].product.name')[1]
         self.assertEqual(trueish.extract(), u'nonempty')
         self.assertTrue(trueish)
 
@@ -158,6 +384,14 @@ class SelectorTestCase(unittest.TestCase):
         self.assertIsInstance(hs.css('p')[:2], self.sscls.selectorlist_cls)
         self.assertEqual(hs.css('p')[2:3].extract(), [u'<p>3</p>'])
         self.assertEqual(hs.css('p')[1:3].extract(), [u'<p>2</p>', u'<p>3</p>'])
+
+        jsbody = u'[1, 2, 3, 4]'
+        jmsel = self.sscls(text=jsbody, type='json')
+        self.assertIsInstance(jmsel.jmespath('[]')[2], self.sscls)
+        self.assertIsInstance(jmsel.jmespath('[]')[2:3], self.sscls.selectorlist_cls)
+        self.assertIsInstance(jmsel.jmespath('[]')[:2], self.sscls.selectorlist_cls)
+        self.assertEqual(jmsel.jmespath('[]')[2:3].extract(), ['3'])
+        self.assertEqual(jmsel.jmespath('[]')[1:3].extract(), ['2', '3'])
 
     def test_nested_selectors(self):
         """Nested selector tests"""
@@ -183,6 +417,50 @@ class SelectorTestCase(unittest.TestCase):
         self.assertEqual(divtwo.xpath(".//li").extract(),
                          ["<li>four</li>", "<li>five</li>", "<li>six</li>"])
         self.assertEqual(divtwo.xpath("./li").extract(), [])
+
+        jsbody = u"""
+        {
+            "orders": [
+                {
+                    "order": {
+                        "id": 1,
+                        "items": [
+                            {
+                                "id": 62,
+                                "quantity": 1,
+                                "productId": 70
+                            }
+                        ]
+                    }
+                },
+                {
+                    "order": {
+                        "id": 2,
+                        "items": [
+                            {
+                                "id": 63,
+                                "quantity": 1,
+                                "productId": 73
+                            },
+                            {
+                                "id": 64,
+                                "quantity": 2,
+                                "productId": 28
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        """
+        jmsel = self.sscls(text=jsbody, type='json')
+        ordertwo = jmsel.jmespath('orders[1]')
+        self.assertEqual([json.dumps(json.loads(x), sort_keys=True) for x in ordertwo.jmespath('order.items').extract()],
+                         ['{"id": 63, "productId": 73, "quantity": 1}', '{"id": 64, "productId": 28, "quantity": 2}'])
+
+        self.assertEqual(ordertwo.jmespath('order.items[].id').extract(),
+                         ['63', '64'])
+        self.assertEqual(ordertwo.jmespath('*.quantity').extract(), [])
 
     def test_mixed_nested_selectors(self):
         body = u'''<body>
@@ -289,6 +567,7 @@ class SelectorTestCase(unittest.TestCase):
 
     def test_empty_bodies_shouldnt_raise_errors(self):
         self.sscls(text=u'').xpath('//text()').extract()
+        self.sscls(text=u'', type='json').jmespath('*').extract()
 
     def test_null_bytes_shouldnt_raise_errors(self):
         text = u'<root>pre\x00post</root>'
@@ -417,6 +696,7 @@ class SelectorTestCase(unittest.TestCase):
         self.assertIsInstance(sel.xpath('//div')[0], MySelector)
         self.assertIsInstance(sel.css('div'), MySelectorList)
         self.assertIsInstance(sel.css('div')[0], MySelector)
+
 
 class ExsltTestCase(unittest.TestCase):
 
