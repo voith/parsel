@@ -4,6 +4,7 @@ import weakref
 import six
 import unittest
 import json
+import warnings
 from parsel import Selector
 
 
@@ -139,9 +140,11 @@ class SelectorTestCase(unittest.TestCase):
         }
         """
 
-        representation = '<Selector xpath=None jmespath=\"products[?product.name==\'©\'].product.name\" data=\'©\'>'
+        representation = '<Selector xpath=None jmespath=' \
+                         '\"products[?product.name==\'©\'].product.name\" data=\'©\'>'
         if six.PY2:
-            representation = '<Selector xpath=None jmespath=u"products[?product.name==\'\\xa9\'].product.name" data=u\'\\xa9\'>'
+            representation = '<Selector xpath=None jmespath=' \
+                             'u"products[?product.name==\'\\xa9\'].product.name" data=u\'\\xa9\'>'
 
         jmsel = self.sscls(text=jsbody, type='json')
         self.assertEqual(
@@ -313,7 +316,7 @@ class SelectorTestCase(unittest.TestCase):
 
         jsbody = u'[]'
         jmsel = self.sscls(text=jsbody, type='json')
-        self.assertEquals(jmsel.jmespath('contains(`foobar`, `foo`)').extract(), ['true'])
+        self.assertEquals(jmsel.jmespath('contains(`foobar`, `foo`)').extract(), [u'true'])
 
     def test_differences_parsing_xml_vs_html(self):
         """Test that XML and HTML Selector's behave differently"""
@@ -390,8 +393,8 @@ class SelectorTestCase(unittest.TestCase):
         self.assertIsInstance(jmsel.jmespath('[]')[2], self.sscls)
         self.assertIsInstance(jmsel.jmespath('[]')[2:3], self.sscls.selectorlist_cls)
         self.assertIsInstance(jmsel.jmespath('[]')[:2], self.sscls.selectorlist_cls)
-        self.assertEqual(jmsel.jmespath('[]')[2:3].extract(), ['3'])
-        self.assertEqual(jmsel.jmespath('[]')[1:3].extract(), ['2', '3'])
+        self.assertEqual(jmsel.jmespath('[]')[2:3].extract(), [u'3'])
+        self.assertEqual(jmsel.jmespath('[]')[1:3].extract(), [u'2', u'3'])
 
     def test_nested_selectors(self):
         """Nested selector tests"""
@@ -455,25 +458,54 @@ class SelectorTestCase(unittest.TestCase):
         """
         jmsel = self.sscls(text=jsbody, type='json')
         ordertwo = jmsel.jmespath('orders[1]')
-        self.assertEqual([json.dumps(json.loads(x), sort_keys=True) for x in ordertwo.jmespath('order.items').extract()],
-                         ['{"id": 63, "productId": 73, "quantity": 1}', '{"id": 64, "productId": 28, "quantity": 2}'])
+        self.assertEqual([json.dumps(json.loads(x), sort_keys=True)
+                          for x in ordertwo.jmespath('order.items').extract()],
+                         [u'{"id": 63, "productId": 73, "quantity": 1}',
+                          u'{"id": 64, "productId": 28, "quantity": 2}'])
 
         self.assertEqual(ordertwo.jmespath('order.items[].id').extract(),
-                         ['63', '64'])
+                         [u'63', u'64'])
         self.assertEqual(ordertwo.jmespath('*.quantity').extract(), [])
 
-    def test_mixed_nested_selectors(self):
+    def test_mixed_nested_selectors_when_type_is_None(self):
+        js = u'{"id": "1", "name": "ABCD", "html": "<p>html content</p>"}'
+        body = u'''<body>
+                    <div id=1>not<span>me</span></div>
+                    <div class="dos"><p>text</p><a href='#'>foo</a></div>
+                    <div class="data" data-attr='{}'><p>json</p></div>
+               </body>'''.format(js)
+        sel = self.sscls(text=body)
+        self.assertEqual(sel.xpath('//div[@id="1"]').css('span::text').extract(), [u'me'])
+        self.assertEqual(sel.css('#1').xpath('./span/text()').extract(), [u'me'])
+        self.assertEqual(sel.xpath('//div/@data-attr').jmespath('id').extract(), [u'1'])
+        self.assertEqual(sel.css("div[data-attr]::attr(data-attr)").jmespath('id').extract(), [u'1'])
+        self.assertEqual(sel.xpath('//div/@data-attr').jmespath('html').xpath('//p/text()').extract(),
+                         [u'html content'])
+        self.assertEqual(sel.xpath('//div/@data-attr').jmespath('html').css('p').extract(),
+                         [u'<p>html content</p>'])
+
+    def test_mixed_nested_selectors_when_type_is_json(self):
         body = u'''<body>
                     <div id=1>not<span>me</span></div>
                     <div class="dos"><p>text</p><a href='#'>foo</a></div>
                </body>'''
-        sel = self.sscls(text=body)
-        self.assertEqual(sel.xpath('//div[@id="1"]').css('span::text').extract(), [u'me'])
-        self.assertEqual(sel.css('#1').xpath('./span/text()').extract(), [u'me'])
+        mixed_body = u"""
+        {{
+            "id": 32,
+            "name": "ABCD",
+            "description": "{}"
+        }}
+        """.format(body.replace('"', '\\"').replace('\n', ''))
+        sel = self.sscls(text=mixed_body, type='json')
+        self.assertEqual(sel.jmespath('description').xpath('//div[@id="1"]').css('span::text').extract(), [u'me'])
+        self.assertEqual(sel.jmespath('description').css('#1').xpath('./span/text()').extract(), [u'me'])
 
     def test_dont_strip(self):
         sel = self.sscls(text=u'<div>fff: <a href="#">zzz</a></div>')
         self.assertEqual(sel.xpath("//text()").extract(), [u'fff: ', u'zzz'])
+
+        jmsel = self.sscls(text=u'[{"name": "fff: "}, {"name": "zzz"}]', type='json')
+        self.assertEqual(jmsel.jmespath('[].name').extract(), [u'fff: ', u'zzz'])
 
     def test_namespaces_simple(self):
         body = u"""
@@ -527,11 +559,27 @@ class SelectorTestCase(unittest.TestCase):
                          ["John", "Paul"])
         self.assertEqual(x.xpath("//ul/li").re("Age: (\d+)"),
                          ["10", "20"])
+        jsbody = u"""
+        {
+            "order": {
+                "detail1": "Title: ABC",
+                "detail2": "Price: $30"
+            }
+        }
+        """
+        j = self.sscls(text=jsbody, type='json')
+        self.assertEqual(j.jmespath('order.detail1').re('Title: (\w+)'),
+                         ["ABC"])
+        self.assertEqual(j.jmespath('order.detail2').re("Price: \$(\d+)"),
+                         ["30"])
 
     def test_re_intl(self):
         body = u'<div>Evento: cumplea\xf1os</div>'
         x = self.sscls(text=body)
         self.assertEqual(x.xpath("//div").re("Evento: (\w+)"), [u'cumplea\xf1os'])
+        jsbody = u'{"text": "Evento: cumplea\xf1os"}'
+        j = self.sscls(text=jsbody, type='json')
+        self.assertEqual(j.jmespath('text').re("Evento: (\w+)"), [u'cumplea\xf1os'])
 
     def test_selector_over_text(self):
         hs = self.sscls(text=u'<root>lala</root>')
@@ -539,6 +587,8 @@ class SelectorTestCase(unittest.TestCase):
         xs = self.sscls(text=u'<root>lala</root>', type='xml')
         self.assertEqual(xs.extract(), u'<root>lala</root>')
         self.assertEqual(xs.xpath('.').extract(), [u'<root>lala</root>'])
+        js = self.sscls(text=u'{"name": "abcd"}', type='json')
+        self.assertEqual(js.extract(), u'{"name": "abcd"}')
 
     def test_invalid_xpath(self):
         "Test invalid xpath raises ValueError with the invalid xpath"
@@ -546,12 +596,23 @@ class SelectorTestCase(unittest.TestCase):
         xpath = "//test[@foo='bar]"
         self.assertRaisesRegexp(ValueError, re.escape(xpath), x.xpath, xpath)
 
+    def test_invalid_jmespath(self):
+        j = self.sscls(text=u'{["id": "1"}]')
+        jmespath = '[?id == "1]'
+        self.assertRaisesRegexp(ValueError, re.escape(jmespath), j.jmespath, jmespath)
+
     def test_invalid_xpath_unicode(self):
         "Test *Unicode* invalid xpath raises ValueError with the invalid xpath"
         x = self.sscls(text=u"<html></html>")
         xpath = u"//test[@foo='\u0431ar]"
         encoded = xpath if six.PY3 else xpath.encode('unicode_escape')
         self.assertRaisesRegexp(ValueError, re.escape(encoded), x.xpath, xpath)
+
+    def test_invalid_jmespath_unicode(self):
+        j = self.sscls(text=u'[{"id": "1"}]', type='json')
+        jmespath = u"[?id == '\u0431ar]"
+        encoded = jmespath if six.PY3 else jmespath.encode('unicode_escape')
+        self.assertRaisesRegexp(ValueError, re.escape(encoded), j.jmespath, jmespath)
 
     def test_http_header_encoding_precedence(self):
         # u'\xa3'     = pound symbol in unicode
@@ -683,7 +744,6 @@ class SelectorTestCase(unittest.TestCase):
         sel = self.sscls(text=u'nothing', base_url='http://example.com')
         self.assertEquals(u'http://example.com', sel.root.base)
 
-
     def test_extending_selector(self):
         class MySelectorList(Selector.selectorlist_cls):
             pass
@@ -696,6 +756,65 @@ class SelectorTestCase(unittest.TestCase):
         self.assertIsInstance(sel.xpath('//div')[0], MySelector)
         self.assertIsInstance(sel.css('div'), MySelectorList)
         self.assertIsInstance(sel.css('div')[0], MySelector)
+
+    def test_invalid_json_should_not_raise_errors(self):
+        text = u"{'id': '1'}"
+        j = self.sscls(text=text, type='json')
+        j.jmespath('id').extract()
+
+    def test_type_for_invalid_json(self):
+        text = u"{'id': '1'}"
+        j = self.sscls(text=text, type='json')
+        self.assertEqual(j.type, 'html')
+
+    def test_warnings_for_incompatible_methods_for_type_json(self):
+        text = u'{"id": "1"}'
+        jmsel = self.sscls(text=text, type='json')
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            jmsel.remove_namespaces()
+            jmsel.register_namespace("g", "http://base.google.com/ns/1.0")
+
+        self.assertEqual(len(w), 2)
+        self.assertEqual(
+            str(w[0].message),
+            'Cannot call this method when '
+            'Selector is instantiated with type: `json`')
+
+    def test_donot_warnings_for_incompatible_methods_for_type_json(self):
+        xml = u"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:atom="http://www.w3.org/2005/Atom" xml:lang="en-US" xmlns:media="http://search.yahoo.com/mrss/">
+  <link atom:type="text/html">
+  <link atom:type="application/atom+xml">
+</feed>
+"""
+        sel = self.sscls(text=xml, type='xml')
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sel.remove_namespaces()
+            sel.register_namespace("g", "http://base.google.com/ns/1.0")
+        self.assertEqual(len(w), 0)
+
+    def test_json_bool(self):
+        js = u"""
+        {
+            "order": {
+                "shipped": "true",
+                "delivered": "false"
+            }
+        }
+        """
+        jmsel = self.sscls(text=js, type='json')
+        self.assertEqual(jmsel.jmespath('order.shipped').extract(), [u'true'])
+        self.assertEqual(jmsel.jmespath('order.delivered').extract(), [u'false'])
+
+    def test_jmespath_returns_none_for_json_null(self):
+        js = u'{"id": null}'
+        jmsel = self.sscls(text=js, type='json')
+        self.assertEqual(jmsel.jmespath('id').extract(), [])
+        self.assertEqual(jmsel.jmespath('id').extract_first(), None)
 
 
 class ExsltTestCase(unittest.TestCase):

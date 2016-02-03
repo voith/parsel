@@ -78,7 +78,7 @@ def json_incompatible(func):
     def deco(selector_cls, *args, **kwargs):
         if selector_cls._is_type_json():
             warnings.warn('Cannot call this method when '
-                          'Selector is instantiated with type: \'json\'')
+                          'Selector is instantiated with type: `json`')
             return None
         return func(selector_cls, *args, **kwargs)
     return deco
@@ -168,7 +168,7 @@ class Selector(object):
 
     ``type`` defines the selector type, it can be ``"html"``, ``"xml"``, ``"json"`` or ``None`` (default).
     If ``type`` is ``None``, the selector defaults to ``"html"``.
-    if ``type`` is ``json`` than Selector tries to decode text.
+    if ``type`` is ``json`` than Selector tries to decode text to a json object.
     If json decoding fails than Selector silently defaults back to ``"html"``
     """
 
@@ -293,7 +293,7 @@ class Selector(object):
             if isinstance(self.json_obj, six.string_types):
                 return six.text_type(self.json_obj)
             else:
-                return json.dumps(self.json_obj)
+                return six.text_type(json.dumps(self.json_obj))
 
         try:
             return etree.tostring(self.root,
